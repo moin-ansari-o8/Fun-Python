@@ -173,7 +173,7 @@ class UnifiedNetworkWidget(QWidget):
         self.widget_height = 40
         self.panel_width = 280
         self.panel_height = 160
-        self.min_panel_width = 200
+        self.min_panel_width = 220  # Increased to accommodate title + close button
         self.min_panel_height = 120
         self.max_panel_width = 500
         self.max_panel_height = 400
@@ -201,7 +201,7 @@ class UnifiedNetworkWidget(QWidget):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_network_speeds)
 
-        # Auto-collapse timer (10 seconds)
+        # Auto-collapse timer (10 seconds after hover)
         self.auto_collapse_timer = QTimer()
         self.auto_collapse_timer.setSingleShot(True)
         self.auto_collapse_timer.timeout.connect(self.collapse_widget)
@@ -209,6 +209,11 @@ class UnifiedNetworkWidget(QWidget):
         self.hide_timer = QTimer()
         self.hide_timer.setSingleShot(True)
         self.hide_timer.timeout.connect(self.collapse_widget)
+
+        # Hover delay timer (10 seconds after leaving hover)
+        self.hover_delay_timer = QTimer()
+        self.hover_delay_timer.setSingleShot(True)
+        self.hover_delay_timer.timeout.connect(self.collapse_widget)
 
         self.launch_timer = QTimer()
         self.launch_timer.setSingleShot(True)
@@ -222,6 +227,9 @@ class UnifiedNetworkWidget(QWidget):
         self.update_title_font()
         self.update_label_fonts()
 
+        # Enable mouse tracking for hover events
+        self.setMouseTracking(True)
+
         # Show launch animation
         self.show_launch_animation()
 
@@ -234,14 +242,52 @@ class UnifiedNetworkWidget(QWidget):
         # Create panel content (initially hidden)
         self.panel_content = QWidget()
         panel_layout = QVBoxLayout()
-        panel_layout.setContentsMargins(20, 15, 20, 15)
-        panel_layout.setSpacing(10)
+        panel_layout.setContentsMargins(15, 12, 15, 15)
+        panel_layout.setSpacing(8)
 
-        # Title
+        # Title with close button
+        title_container = QHBoxLayout()
+        title_container.setContentsMargins(0, 0, 0, 0)
+        title_container.setSpacing(5)
+
         self.title_label = QLabel("Network Speed Monitor")
         self.update_title_font()
-        self.title_label.setAlignment(Qt.AlignCenter)
-        panel_layout.addWidget(self.title_label)
+        self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.title_label.setWordWrap(False)
+        self.title_label.setSizePolicy(
+            self.title_label.sizePolicy().Expanding,
+            self.title_label.sizePolicy().Preferred,
+        )
+
+        # Close button
+        self.close_button = QLabel("×")
+        self.close_button.setFixedSize(18, 18)
+        self.close_button.setAlignment(Qt.AlignCenter)
+        self.close_button.setStyleSheet(
+            """
+            QLabel {
+                color: #FF6B6B;
+                background-color: transparent;
+                border-radius: 9px;
+                font-size: 14px;
+                font-weight: bold;
+                border: 1px solid transparent;
+            }
+            QLabel:hover {
+                background-color: rgba(255, 107, 107, 20);
+                border: 1px solid rgba(255, 107, 107, 50);
+            }
+        """
+        )
+        self.close_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.close_button.mousePressEvent = self.close_button_clicked
+        self.close_button.setToolTip("Close Network Monitor")
+
+        title_container.addWidget(
+            self.title_label, 1
+        )  # Give title label stretch factor of 1
+        title_container.addWidget(self.close_button, 0)  # Give close button no stretch
+        panel_layout.addLayout(title_container)
 
         # Separator
         separator = QFrame()
@@ -592,11 +638,13 @@ class UnifiedNetworkWidget(QWidget):
                 self.setCursor(QCursor(Qt.PointingHandCursor))
                 self.snap_to_edge()
                 self.dragging = False
-                self.start_auto_collapse_timer()  # Restart auto-collapse after drag
+                # No need to restart auto-collapse timer since we use hover
                 # Position will be saved automatically by animate_to_edge
             else:
-                # We weren't dragging or resizing - toggle expanded state
-                self.toggle_expansion()
+                # We weren't dragging or resizing - check if we should collapse
+                if self.is_expanded:
+                    # Click to collapse when expanded
+                    self.collapse_widget()
 
     def snap_to_edge(self):
         """Snap widget to nearest edge"""
@@ -670,16 +718,14 @@ class UnifiedNetworkWidget(QWidget):
         self.update_title_font()
         self.update_label_fonts()
 
-        # Start auto-collapse timer
-        self.start_auto_collapse_timer()
-
         # Position and animate
         self.animate_to_edge()
 
     def collapse_widget(self):
         """Collapse widget to edge"""
-        # Stop auto-collapse timer
+        # Stop all timers
         self.stop_auto_collapse_timer()
+        self.hover_delay_timer.stop()
 
         # Set collapsed state
         self.set_collapsed_state()
@@ -732,8 +778,11 @@ class UnifiedNetworkWidget(QWidget):
         if not hasattr(self, "title_label"):
             return  # Label not created yet
 
-        # Calculate font size based on widget width
-        base_size = max(8, min(16, int(self.panel_width / 20)))
+        # Calculate font size based on widget width, accounting for close button space
+        available_width = (
+            self.panel_width - 50
+        )  # Reserve space for close button and margins
+        base_size = max(8, min(14, int(available_width / 18)))
         title_font = QFont()
         title_font.setPointSize(base_size)
         title_font.setBold(True)
@@ -954,7 +1003,28 @@ class UnifiedNetworkWidget(QWidget):
             self.setFixedSize(self.panel_width, self.panel_height)
 
             self.save_position()  # Save new size and position
-            self.start_auto_collapse_timer()  # Restart auto-collapse timer
+
+    def enterEvent(self, event):
+        """Handle mouse enter events to expand the widget"""
+        # Stop any pending collapse timer
+        self.hover_delay_timer.stop()
+
+        # Only expand if not already expanded and not in middle of operations
+        if not self.is_expanded and not self.dragging and not self.resizing:
+            self.expand_widget()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Handle mouse leave events to start collapse timer"""
+        # Don't collapse immediately - start 10 second timer
+        if self.is_expanded and not self.dragging and not self.resizing:
+            self.hover_delay_timer.start(10000)  # 10 seconds delay
+        super().leaveEvent(event)
+
+    def close_button_clicked(self, event):
+        """Handle close button click - terminate the application"""
+        self.save_position()
+        QApplication.instance().quit()
 
 
 class NetworkMonitorApp(QApplication):
@@ -1003,7 +1073,7 @@ class NetworkMonitorApp(QApplication):
         # Show message
         self.tray_icon.showMessage(
             "Network Monitor",
-            "Network speed monitor is running. Click to expand the monitor panel.",
+            "Network speed monitor is running. Hover to expand, use × button to close.",
             QSystemTrayIcon.Information,
             3000,
         )
